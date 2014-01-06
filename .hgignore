@@ -1,0 +1,6 @@
+syntax: glob
+dist/*
+*.hi
+*.o
+*.swp
+
