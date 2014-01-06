@@ -1,27 +1,12 @@
 
-import Prelude hiding (readFile)
+import Prelude hiding (readFile, null)
 import System.Environment (getArgs)
-import Data.Binary.Get (Get, runGet, getWord8, getWord16be, getWord32be, getWord64be, getLazyByteStringNul, skip)
-import Data.Word (Word32, Word8)
-import Data.ByteString.Lazy (ByteString, readFile)
-import Data.Map (Map, empty)
+import Data.Binary.Get (Get, runGet, getWord8, getWord16be, getWord32be, getWord64be, getLazyByteStringNul)
+import Data.Word (Word8, Word32, Word64)
+import Data.ByteString.Lazy (ByteString, null, readFile)
+import Data.Map (Map, fromList)
 import Control.Monad (when)
-import Control.Applicative ((<$>), (<*>), (<*))
-
--- Offset, Path
-type Entry = (Int, String)
-
-uncompress :: [Entry] -> [String]
-uncompress = uncompress' 0 ""
-  where
-    uncompress' offset' path' ((offset, path):rest) = let prefix = offset' + offset
-                                                          entry = take prefix path' ++ path
-                                                      in entry : uncompress' prefix entry rest
-    uncompress' _ _ [] = []
-
-dummy = [ (0,  "/usr/src")
-        , (8,  "/cmd/aardvark.c")
-        , (6,  "rmadillo.c") ]
+import Control.Applicative ((<$>), (<*>), (<*), many, some, empty)
 
 data Header = Header
   { confSize :: Word32
@@ -32,38 +17,62 @@ data Header = Header
 
 type Config = Map ByteString [ByteString]
 
+data Directory = Directory
+  { timeS :: Word64
+  , timeNS :: Word32
+  , path :: ByteString
+  , contents :: [Entry] }
+  deriving (Show)
+
+data Entry = File ByteString | SubDirectory ByteString
+  deriving (Show)
+
 data Database = Database
   { header :: Header
   , config :: Config
-  , entries :: [Entry] }
+  , entries :: [Directory] }
   deriving (Show)
-
 
 -- man: mlocate.db
 
-readHeader :: Get Header
-readHeader = do
+getHeader :: Get Header
+getHeader = do
   magic <- getWord64be
   when (magic /= mlocate_magic) $ fail "Incorrect magic number"
   Header <$> getWord32be <*> getWord8 <*> ((== 1) <$> getWord8) <* getWord16be <*> getLazyByteStringNul
   where
     mlocate_magic = 0x006D6C6F63617465 -- \0 m l o c a t e
 
-readConfig :: Int -> Get Config
-readConfig length = skip length >> (return $ empty)
+getConfig :: Get Config
+getConfig = fromList <$> many getAssignment
+  where
+  getAssignment = (,) <$> getLazyByteStringNul <*> some nonEmptyString <* getWord8
+  nonEmptyString = do
+    val <- getLazyByteStringNul
+    if null val then empty else return val
 
-readEntry :: Get Entry
-readEntry = return undefined
+getDirectory :: Get Directory
+getDirectory = Directory <$> getWord64be <*> getWord32be <* getWord32be <*> getLazyByteStringNul <*> many getEntry <* getWord8
 
-readDatabase :: Get Database
-readDatabase = do
-  header <- readHeader
-  Database header <$> (readConfig $ fromIntegral $ confSize header) <*> (return [])
+getEntry :: Get Entry
+getEntry = do
+  entryType <- getWord8
+  case entryType of
+    0 -> File <$> getLazyByteStringNul
+    1 -> SubDirectory <$> getLazyByteStringNul
+    _ -> empty
+
+getDatabase :: Get Database
+getDatabase = do
+  Database <$> getHeader <*> getConfig <*> many getDirectory
+
+readDatabase :: ByteString -> Database
+readDatabase = runGet getDatabase
 
 main = do
   (file:_) <- getArgs
   contents <- readFile file
-  print $ runGet readDatabase contents
+  print $ readDatabase contents
 
 
 
